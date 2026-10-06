@@ -14,14 +14,14 @@ A polished, mobile-first hackathon MVP for an AI × Solana Thai-speaking adventu
 - In-memory playback with no upload or permanent voice storage
 - Simulated calibration and clearly labelled prototype pronunciation estimates
 - Graceful microphone permission, unsupported-browser, and recording-error states
-- Simulated Thai speech recognition
+- Real browser Thai speech recognition when Web Speech Recognition is supported, with Demo Mode fallback
 - Two-attempt voice-key challenge with tone feedback
 - Animated ancient gate and atmospheric forest effects
 - Responsive mobile and desktop layouts
 - Final speaking and tone scores
 - Locked Solana proof action (visual placeholder only)
 
-This version intentionally has no backend, authentication, real AI, real speech recognition, or Solana transactions.
+This version intentionally has no backend, authentication, production AI semantic service, real acoustic pronunciation analysis, or Solana transactions. Browser microphone recording and Thai speech recognition are real when the visitor's browser supports the required Web APIs; intent evaluation and pronunciation/tone scores remain prototype implementations.
 
 ## Run locally
 
@@ -64,6 +64,6 @@ The first-phrase repetition uses `getUserMedia()` and `MediaRecorder`. Audio is 
 
 `src/voice.ts` contains the reusable recorder, Thai speech-synthesis, and Thai Web Speech Recognition helpers. Recognition uses `lang = "th-TH"`, `continuous = false`, and `interimResults = true`. Browsers without Speech Recognition retain recording and expose a clearly labelled Demo Mode so the story cannot get stuck.
 
-`src/thaiLanguage.ts` contains the **Prototype semantic evaluator** and polite-particle detector. The current evaluator transparently checks for the Thai concepts `เห็น` and `อะไร`; it is not presented as AI. `ครับ`, `ค่ะ`, and `คะ` are detected separately and do not determine whether the core meaning passes.
+`src/thaiLanguage.ts` contains the **Prototype semantic evaluator** and polite-particle detector. The current keyword-based evaluator transparently checks for the Thai concepts `เห็น` and `อะไร`; it is not a production AI semantic service. `ครับ`, `ค่ะ`, and `คะ` are detected separately and do not determine whether the core meaning passes.
 
-TODO: Replace keyword matching with a production AI semantic evaluation service, and replace prototype pronunciation/tone estimates with real acoustic analysis.
+Pronunciation and tone scores are prototype estimates. TODO: Replace keyword matching with a production AI semantic evaluation service, replace prototype pronunciation/tone estimates with real acoustic analysis, and add real Solana transactions only in a future integration phase.
