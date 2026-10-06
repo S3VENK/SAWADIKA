@@ -1,0 +1,34 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+
+# Secrets, private keys, seed phrases, and wallet material
+secrets/
+.secrets/
+private/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.seed
+*.mnemonic
+*.secret
+*.wallet
+wallet/
+wallets/
+.wallet/
+keypairs/
+*-keypair.json
+*-wallet.json
+wallet*.json
+id.json
+
+# Generated files
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.DS_Store
