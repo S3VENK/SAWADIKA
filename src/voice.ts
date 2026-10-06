@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { thaiVoiceLines, type ThaiVoiceLineId } from './voiceLines'
 
 export type RecorderState = 'idle' | 'requesting' | 'recording' | 'analyzing' | 'ready' | 'error'
 export type RecognitionState = 'idle' | 'listening' | 'result' | 'uncertain' | 'error'
+export type ThaiVoiceSource = 'ai-audio' | 'browser-tts' | 'unavailable'
+export type ThaiVoiceResult = { source: ThaiVoiceSource; message: string | null }
 
 type SpeechRecognitionEventLike = Event & {
   resultIndex: number
@@ -313,4 +316,42 @@ export async function speakThai(text: string) {
   utterance.rate = 0.78
   window.speechSynthesis.speak(utterance)
   return { ok: true, message: null }
+}
+
+function playAudioFile(path: string) {
+  return new Promise<void>((resolve, reject) => {
+    const audio = new Audio(path)
+    audio.preload = 'auto'
+
+    const cleanup = () => {
+      audio.removeEventListener('playing', handlePlaying)
+      audio.removeEventListener('error', handleError)
+    }
+    const handlePlaying = () => {
+      cleanup()
+      resolve()
+    }
+    const handleError = () => {
+      cleanup()
+      reject(new Error(`Voice asset unavailable: ${path}`))
+    }
+
+    audio.addEventListener('playing', handlePlaying, { once: true })
+    audio.addEventListener('error', handleError, { once: true })
+    audio.play().catch(handleError)
+  })
+}
+
+export async function playThaiVoice(lineId: ThaiVoiceLineId): Promise<ThaiVoiceResult> {
+  const line = thaiVoiceLines[lineId]
+
+  try {
+    await playAudioFile(line.audioPath)
+    return { source: 'ai-audio', message: null }
+  } catch {
+    const fallback = await speakThai(line.text)
+    return fallback.ok
+      ? { source: 'browser-tts', message: null }
+      : { source: 'unavailable', message: fallback.message }
+  }
 }

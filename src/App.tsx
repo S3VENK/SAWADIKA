@@ -1,11 +1,20 @@
 import { useEffect, useState } from 'react'
-import { speakThai, useThaiSpeechRecognition, useVoiceRecorder } from './voice'
+import { playThaiVoice, speakThai, useThaiSpeechRecognition, useVoiceRecorder, type ThaiVoiceSource } from './voice'
 import { detectPoliteParticle, evaluateInvestigationIntent } from './thaiLanguage'
+import type { ThaiVoiceLineId } from './voiceLines'
+import { case001 } from './case001'
+import { CaseFileUpdate, CaseHUD, ChapterTransition, CinematicScene, DialogueOverlay, FilmGrain, VoiceTalisman, type TransitionKind } from './cinematic'
+import { useGame } from './game/GameProvider'
+import type { GameEvent, GameScene } from './game/gameMachine'
 
-type Scene = 'training-a' | 'training-b' | 'training-c' | 'title' | 'witness' | 'clue' | 'gate' | 'solved'
-type Particle = 'ครับ' | 'คะ' | 'simple'
-
-const sceneOrder: Scene[] = ['training-a', 'training-b', 'training-c', 'title', 'witness', 'clue', 'gate', 'solved']
+const sceneProgress: Partial<Record<GameScene, number>> = {
+  witness: 1,
+  clue: 2,
+  'voice-gate': 3,
+  'creature-reveal': 4,
+  'case-solved': 4,
+  'solana-claim': 4,
+}
 
 const toneShapes = [
   { name: 'MID', path: 'M4 30 C32 30 58 30 96 30' },
@@ -75,10 +84,10 @@ function SinglePitchContour() {
   )
 }
 
-function ToneContour({ name, path, onSpeechUnavailable }: { name: string; path: string; onSpeechUnavailable: (message: string | null) => void }) {
+function ToneContour({ name, path, onSpeechResult }: { name: string; path: string; onSpeechResult: (message: string | null, source: ThaiVoiceSource) => void }) {
   const playExample = async () => {
     const result = await speakThai('กา')
-    onSpeechUnavailable(result.message)
+    onSpeechResult(result.message, result.ok ? 'browser-tts' : 'unavailable')
   }
   return (
     <div className="tone-contour">
@@ -126,26 +135,43 @@ function ForestGate({ open }: { open: boolean }) {
 }
 
 export default function App() {
-  const [scene, setScene] = useState<Scene>('training-a')
-  const [gateAttempt, setGateAttempt] = useState(0)
-  const [gateOpen, setGateOpen] = useState(false)
+  const { state: game, dispatch } = useGame()
   const [calibrating, setCalibrating] = useState(false)
   const [calibrated, setCalibrated] = useState(false)
-  const [particle, setParticle] = useState<Particle>('simple')
   const [speechFallback, setSpeechFallback] = useState<string | null>(null)
+  const [voiceSource, setVoiceSource] = useState<ThaiVoiceSource | null>(null)
   const [transitioning, setTransitioning] = useState(false)
+  const [chapterTransition, setChapterTransition] = useState<TransitionKind | null>(null)
   const phraseRecorder = useVoiceRecorder()
   const phraseRecognition = useThaiSpeechRecognition()
   const witnessRecognition = useThaiSpeechRecognition()
+  const scene = game.currentScene
+  const sceneClass = scene === 'training-1' ? 'training-a'
+    : scene === 'training-2' ? 'training-b'
+      : scene === 'training-3' ? 'training-c'
+        : scene === 'case-intro' ? 'title'
+          : scene === 'voice-gate' ? 'gate'
+            : scene === 'case-solved' ? 'solved'
+              : scene
 
-  const moveTo = (next: Scene) => {
+  const moveTo = (event: GameEvent) => {
     if (transitioning) return
     setTransitioning(true)
     window.setTimeout(() => {
-      setScene(next)
+      dispatch(event)
       window.scrollTo({ top: 0, behavior: 'smooth' })
       setTransitioning(false)
     }, 420)
+  }
+
+  const moveThroughChapter = (event: GameEvent, kind: TransitionKind) => {
+    if (transitioning || chapterTransition) return
+    setChapterTransition(kind)
+    window.setTimeout(() => {
+      dispatch(event)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }, 1450)
+    window.setTimeout(() => setChapterTransition(null), 2800)
   }
 
   const runCalibration = () => {
@@ -158,32 +184,43 @@ export default function App() {
   }
 
   const speakAtGate = () => {
-    if (gateOpen) return
-    if (gateAttempt === 0) {
-      setGateAttempt(1)
-      return
-    }
-    setGateAttempt(2)
-    window.setTimeout(() => setGateOpen(true), 550)
+    dispatch({ type: 'GATE_ATTEMPT' })
   }
 
   useEffect(() => {
+    if (scene === 'start') dispatch({ type: 'START' })
+  }, [dispatch, scene])
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Enter' && scene === 'title') moveTo('witness')
+      if (event.key === 'Enter' && scene === 'case-intro') moveThroughChapter({ type: 'BEGIN_INVESTIGATION' }, 'arrival')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [scene])
 
-  const sceneNumber = sceneOrder.indexOf(scene) - 3
+  const sceneNumber = sceneProgress[scene] ?? 1
+  const particle = game.selectedSpeechStyle
   const chosenPhrase = particle === 'simple' ? 'เห็นอะไร?' : `ยายเห็นอะไร${particle}?`
   const phraseIntent = evaluateInvestigationIntent(phraseRecognition.transcript)
   const phrasePoliteness = detectPoliteParticle(phraseRecognition.transcript)
-  const phrasePassed = phraseRecognition.state === 'result' && phraseIntent.passes
+  const phrasePassed = game.phraseUnlocked
   const phraseMissed = phraseRecognition.state === 'result' && !phraseIntent.passes
   const witnessIntent = evaluateInvestigationIntent(witnessRecognition.transcript)
-  const witnessPassed = witnessRecognition.state === 'result' && witnessIntent.passes
+  const witnessPassed = game.witnessIntentPassed
   const witnessMissed = witnessRecognition.state === 'result' && !witnessIntent.passes
+
+  useEffect(() => {
+    if (scene === 'training-3' && phraseRecognition.state === 'result' && phraseIntent.passes && !game.phraseUnlocked) {
+      dispatch({ type: 'PHRASE_EVALUATED', passed: true })
+    }
+  }, [dispatch, game.phraseUnlocked, phraseIntent.passes, phraseRecognition.state, scene])
+
+  useEffect(() => {
+    if (scene === 'witness' && witnessRecognition.state === 'result' && witnessRecognition.transcript) {
+      dispatch({ type: 'WITNESS_EVALUATED', transcript: witnessRecognition.transcript, passed: witnessIntent.passes })
+    }
+  }, [dispatch, scene, witnessIntent.passes, witnessRecognition.state, witnessRecognition.transcript])
   const startPhraseVoice = () => {
     phraseRecognition.reset()
     void phraseRecorder.startRecording()
@@ -196,21 +233,42 @@ export default function App() {
   const playThai = async (text: string) => {
     const result = await speakThai(text)
     setSpeechFallback(result.message)
+    setVoiceSource(result.ok ? 'browser-tts' : 'unavailable')
+  }
+  const playStoryVoice = async (lineId: ThaiVoiceLineId) => {
+    const result = await playThaiVoice(lineId)
+    setSpeechFallback(result.message)
+    setVoiceSource(result.source)
+  }
+
+  const resetGame = () => {
+    phraseRecorder.reset()
+    phraseRecognition.reset()
+    witnessRecognition.reset()
+    setCalibrating(false)
+    setCalibrated(false)
+    setSpeechFallback(null)
+    setVoiceSource(null)
+    dispatch({ type: 'RESET_GAME' })
   }
 
   return (
-    <main className={`game scene-${scene} ${transitioning ? 'is-transitioning' : ''}`}>
+    <main className={`game scene-${sceneClass} ${transitioning ? 'is-transitioning' : ''}`}>
       <MountainLayers />
       <div className="grain" aria-hidden="true" />
-      <header className="topbar">
-        <div className="brand-mini"><b>๗๗</b><span>MYSTERIES<br />OF THAILAND</span></div>
-        {scene.startsWith('training')
-          ? <div className="case-progress training-progress"><span>TRAINING</span><i>{sceneOrder.indexOf(scene) + 1}/3</i></div>
-          : scene !== 'title' && <div className="case-progress"><span>CASE 001</span><i>{sceneNumber}/4</i></div>}
-      </header>
+      <FilmGrain />
+      {scene.startsWith('training') || scene === 'case-intro' || scene === 'start' ? (
+        <header className="topbar">
+          <div className="brand-mini"><b>๗๗</b><span>MYSTERIES<br />OF THAILAND</span></div>
+          {scene.startsWith('training') && <div className="case-progress training-progress"><span>TRAINING</span><i>{scene.slice(-1)}/3</i></div>}
+        </header>
+      ) : <CaseHUD step={Math.max(sceneNumber, 1)} />}
+
+      {voiceSource === 'browser-tts' && <div className="voice-source-label" role="status">PROTOTYPE BROWSER VOICE</div>}
+      {chapterTransition && <ChapterTransition kind={chapterTransition} />}
 
       <div className="scene-shell">
-        {scene === 'training-a' && (
+        {scene === 'training-1' && (
           <section className="panel training-panel basics-panel" aria-labelledby="training-a-heading">
             <CornerMarks />
             <div className="scene-label">FIELD ORIENTATION · 01</div>
@@ -225,12 +283,12 @@ export default function App() {
               <div><b>5</b><span>TONES</span></div>
             </div>
             <div className="training-message"><p>You don’t need to memorize them.</p><strong>Tonight, you only need to listen — and speak.</strong></div>
-            <button className="primary-button" onClick={() => moveTo('training-b')}><span>LEARN TO LISTEN</span><b>→</b></button>
+            <button className="primary-button" onClick={() => moveTo({ type: 'COMPLETE_TRAINING_1' })}><span>LEARN TO LISTEN</span><b>→</b></button>
             <p className="microcopy">LESS THAN 60 SECONDS · SOUND ON</p>
           </section>
         )}
 
-        {scene === 'training-b' && (
+        {scene === 'training-2' && (
           <section className="panel training-panel tones-panel" aria-labelledby="training-b-heading">
             <CornerMarks />
             <div className="scene-label">FIELD ORIENTATION · 02</div>
@@ -239,7 +297,7 @@ export default function App() {
             <p className="training-intro">Thai has five tones.<br /><strong>The shape of your voice can change meaning.</strong></p>
             <p className="tone-shape-label">SIMPLIFIED TONE SHAPES FOR LEARNING</p>
             <div className="tone-grid">
-              {toneShapes.map((tone) => <ToneContour key={tone.name} {...tone} onSpeechUnavailable={setSpeechFallback} />)}
+              {toneShapes.map((tone) => <ToneContour key={tone.name} {...tone} onSpeechResult={(message, source) => { setSpeechFallback(message); setVoiceSource(source) }} />)}
             </div>
             <p className="prototype-audio">▶ Prototype audio uses your browser’s Thai speech voice.</p>
             {speechFallback && <p className="voice-fallback" role="status">{speechFallback}</p>}
@@ -255,11 +313,11 @@ export default function App() {
                 <><div className="calibration-result"><b>VOICE MATCH <em>89%</em></b><span>VOICE CALIBRATED ✓</span></div><small className="estimate-note">Prototype tone estimate</small></>
               )}
             </div>
-            {calibrated && <button className="primary-button" onClick={() => moveTo('training-c')}><span>LEARN YOUR FIRST PHRASE</span><b>→</b></button>}
+            {calibrated && <button className="primary-button" onClick={() => moveTo({ type: 'COMPLETE_TRAINING_2' })}><span>LEARN YOUR FIRST PHRASE</span><b>→</b></button>}
           </section>
         )}
 
-        {scene === 'training-c' && (
+        {scene === 'training-3' && (
           <section className="panel training-panel phrase-panel" aria-labelledby="training-c-heading">
             <CornerMarks />
             <div className="scene-label">FIELD ORIENTATION · 03</div>
@@ -276,9 +334,9 @@ export default function App() {
               <p>Choose how you want to speak. <strong>We never infer gender from your voice.</strong></p>
               <div className="particle-notes"><span><b lang="th">ครับ</b> polite particle — commonly used by male speakers</span><span><b lang="th">คะ</b> polite question particle — commonly used by female speakers</span></div>
               <div className="particle-choices" role="group" aria-label="Choose a Thai speaking style">
-                <button className={particle === 'ครับ' ? 'selected' : ''} onClick={() => setParticle('ครับ')} lang="th">ครับ</button>
-                <button className={particle === 'คะ' ? 'selected' : ''} onClick={() => setParticle('คะ')} lang="th">คะ</button>
-                <button className={particle === 'simple' ? 'selected' : ''} onClick={() => setParticle('simple')}>SIMPLE THAI</button>
+                <button className={particle === 'ครับ' ? 'selected' : ''} onClick={() => dispatch({ type: 'SELECT_SPEECH_STYLE', style: 'ครับ' })} lang="th">ครับ</button>
+                <button className={particle === 'คะ' ? 'selected' : ''} onClick={() => dispatch({ type: 'SELECT_SPEECH_STYLE', style: 'คะ' })} lang="th">คะ</button>
+                <button className={particle === 'simple' ? 'selected' : ''} onClick={() => dispatch({ type: 'SELECT_SPEECH_STYLE', style: 'simple' })}>SIMPLE THAI</button>
               </div>
             </div>
             <div className="phrase-builder">
@@ -318,24 +376,25 @@ export default function App() {
             {phrasePassed && (
               <div className="phrase-unlocked"><small>PHRASE UNLOCKED</small><strong lang="th">เห็นอะไร?</strong><span>WHAT DID YOU SEE?</span></div>
             )}
-            {phrasePassed && <button className="primary-button" onClick={() => moveTo('title')}><span>BEGIN CASE #001</span><b>→</b></button>}
+            {phrasePassed && <button className="primary-button" onClick={() => moveTo({ type: 'BEGIN_CASE' })}><span>BEGIN CASE #001</span><b>→</b></button>}
           </section>
         )}
 
-        {scene === 'title' && (
+        {scene === 'case-intro' && (
           <section className="panel title-panel" aria-labelledby="title-heading">
             <CornerMarks />
             <div className="eyebrow"><span />A THAI LANGUAGE ADVENTURE<span /></div>
             <Sigil />
             <h1 id="title-heading"><small>77</small>MYSTERIES<br /><em>OF THAILAND</em></h1>
             <p className="tagline">Speak Thai. <i>•</i> Solve Mysteries. <i>•</i> Discover Thailand.</p>
+            <button className="story-voice-button" onClick={() => void playStoryVoice('narratorOpening')}>▶ &nbsp; LISTEN TO NARRATOR</button>
             <div className="case-file">
               <span>CASE #001</span>
               <strong>CHIANG RAI</strong>
               <div className="gold-rule" />
               <h2>THE MYSTERY OF<br />THE GOLDEN ASHES</h2>
             </div>
-            <button className="primary-button" onClick={() => moveTo('witness')}>
+            <button className="primary-button" onClick={() => moveThroughChapter({ type: 'BEGIN_INVESTIGATION' }, 'arrival')}>
               <span>START INVESTIGATION</span><b>→</b>
             </button>
             <p className="microcopy">HEADPHONES RECOMMENDED&nbsp; · &nbsp;8 MINUTES</p>
@@ -343,46 +402,53 @@ export default function App() {
         )}
 
         {scene === 'witness' && (
-          <section className="panel story-panel witness-panel" aria-labelledby="witness-heading">
-            <CornerMarks />
-            <div className="scene-label">WITNESS 01</div>
-            <div className="portrait portrait-yai" aria-label="Yai Kham, an elderly witness holding a lantern" role="img">
-              <div className="lantern"><i /><span /></div>
-              <div className="portrait-halo" />
-              <div className="yai-head" /><div className="yai-body" />
-            </div>
-            <div className="dialogue-card">
-              <h2 id="witness-heading">YAI KHAM <span>ยายคำ</span></h2>
-              <blockquote lang="th">“เมื่อคืน...ยายเห็นอะไรบางอย่าง”</blockquote>
-              <p>“Last night... I saw something.”</p>
-            </div>
-            <div className="mission-card">
-              <span className="mission-kicker">YOUR MISSION</span>
-              <h3>Ask the witness:</h3>
-              <p>“WHAT DID YOU SEE?”</p>
-              {!witnessPassed ? (
-                <button className={`voice-button ${witnessRecognition.state === 'listening' ? 'is-listening' : ''}`} onPointerDown={() => { witnessRecognition.reset(); witnessRecognition.start() }} onPointerUp={witnessRecognition.stop} onPointerCancel={witnessRecognition.stop}>
-                  <span className="mic-icon">●</span>
-                  <b>{witnessRecognition.state === 'listening' ? 'LISTENING…' : 'HOLD TO SPEAK'}</b>
-                  <i />
-                </button>
-              ) : (
-                <div className="recognized-card recall-success">
-                  <span className="checkmark">✓</span>
-                  <div><b>PHRASE RECALLED</b><small>SPEECH RECOGNIZED ✓</small></div>
+          <CinematicScene asset={case001.assets.witness} variant="village">
+            <section className={`panel story-panel witness-panel ${witnessPassed ? 'voice-succeeded' : ''}`} aria-labelledby="witness-heading">
+              <div className="location-stamp"><span>{case001.location}</span><i>{case001.time}</i></div>
+              <div className="witness-portrait-area" role="img" aria-label="Yai Kham seated outside a Northern Thai wooden house by lantern light">
+                <div className="lantern-glow" />
+              </div>
+              <div className="witness-interface">
+                <DialogueOverlay
+                  name={case001.witness.name}
+                  thaiName={case001.witness.thaiName}
+                  thai={case001.witness.dialogue}
+                  english={case001.witness.translation}
+                >
+                  <button className="story-voice-button" onClick={() => void playStoryVoice('yaiKhamGreeting')}>▶ &nbsp; LISTEN</button>
+                </DialogueOverlay>
+                <div className="mission-overlay">
+                  <span className="mission-kicker">YOUR MISSION</span>
+                  <h3>ASK THE WITNESS IN THAI</h3>
+                  <p>“What did you see?”</p>
+                  {!witnessPassed ? (
+                    <VoiceTalisman
+                      listening={witnessRecognition.state === 'listening'}
+                      label={witnessRecognition.state === 'listening' ? 'LISTENING…' : 'HOLD TO SPEAK'}
+                      onPointerDown={() => { witnessRecognition.reset(); witnessRecognition.start() }}
+                      onPointerUp={witnessRecognition.stop}
+                    />
+                  ) : (
+                    <div className="voice-unlocked">
+                      <strong lang="th">ยายเห็นอะไรครับ?</strong>
+                      <span>VOICE RECOGNIZED</span>
+                      <b>CLUE UNLOCKED</b>
+                    </div>
+                  )}
+                  {game.witnessTranscript && !witnessPassed && <div className="heard-card compact-heard"><small>I HEARD</small><strong lang="th">“{game.witnessTranscript}”</strong></div>}
+                  {witnessMissed && <div className="intent-retry compact-intent"><b>NOT QUITE</b><span>Try asking what she saw.</span></div>}
+                  {(witnessRecognition.state === 'uncertain' || witnessRecognition.state === 'error') && <div className="intent-retry compact-intent"><b>I’M NOT SURE I HEARD THAT</b><span>Try saying it again.</span></div>}
+                  {!witnessRecognition.supported && <button className="demo-mode" onClick={() => witnessRecognition.simulateSuccess('ยายเห็นอะไรครับ')}>DEMO MODE · SIMULATE RECOGNITION</button>}
+                  <small className="simulation-note">Prototype semantic evaluator · Thai speech recognition</small>
                 </div>
-              )}
-              {witnessRecognition.transcript && <div className="heard-card compact-heard"><small>I HEARD</small><strong lang="th">“{witnessRecognition.transcript}”</strong></div>}
-              {witnessMissed && <div className="intent-retry compact-intent"><b>NOT QUITE</b><span>Try asking what she saw.</span></div>}
-              {(witnessRecognition.state === 'uncertain' || witnessRecognition.state === 'error') && <div className="intent-retry compact-intent"><b>I’M NOT SURE I HEARD THAT</b><span>Try saying it again.</span></div>}
-              {!witnessRecognition.supported && <button className="demo-mode" onClick={() => witnessRecognition.simulateSuccess('ยายเห็นอะไรครับ')}>DEMO MODE · SIMULATE RECOGNITION</button>}
-              <small className="simulation-note">Prototype semantic evaluator · Thai speech recognition</small>
-            </div>
-            {witnessPassed && <button className="text-button" onClick={() => moveTo('clue')}>HEAR HER ANSWER <span>→</span></button>}
-          </section>
+              </div>
+              {witnessPassed && <button className="text-button cinematic-continue" onClick={() => moveThroughChapter({ type: 'OPEN_CLUE' }, 'case-file')}>OPEN UPDATED CASE FILE <span>→</span></button>}
+            </section>
+          </CinematicScene>
         )}
 
         {scene === 'clue' && (
+          <CinematicScene asset={case001.assets.forest} variant="forest">
           <section className="panel story-panel clue-panel" aria-labelledby="clue-heading">
             <CornerMarks />
             <div className="scene-label">FOREST EDGE · 11:47 PM</div>
@@ -392,6 +458,7 @@ export default function App() {
                 <div className="speaker">YAI KHAM <span>ยายคำ</span></div>
                 <blockquote lang="th">“มันมีสี่หู...<br />ห้าตา”</blockquote>
                 <p>“It had four ears... and five eyes.”</p>
+                <button className="story-voice-button" onClick={() => void playStoryVoice('yaiKhamClue')}>▶ &nbsp; LISTEN</button>
               </div>
             </div>
             <div className="discovery-card">
@@ -399,37 +466,58 @@ export default function App() {
               <h2 id="clue-heading">THE FOREST CREATURE</h2>
               <div className="clue-facts"><div><b>4</b><span>EARS</span></div><i /><div><b>5</b><span>EYES</span></div></div>
             </div>
-            <button className="primary-button" onClick={() => moveTo('gate')}><span>FOLLOW THE TRACKS</span><b>→</b></button>
+            <CaseFileUpdate />
+            <button className="primary-button" onClick={() => moveTo({ type: 'FOLLOW_TRACKS' })}><span>FOLLOW THE TRACKS</span><b>→</b></button>
           </section>
+          </CinematicScene>
         )}
 
-        {scene === 'gate' && (
+        {scene === 'voice-gate' && (
+          <CinematicScene asset={case001.assets.gate} variant="gate">
           <section className="panel story-panel gate-panel" aria-labelledby="gate-heading">
             <CornerMarks />
             <div className="scene-label">DEEP FOREST · ANCIENT GATE</div>
-            <ForestGate open={gateOpen} />
-            <div className={`gate-console ${gateOpen ? 'accepted' : ''}`}>
-              <span className="gate-kicker">{gateOpen ? 'GATE UNSEALED' : 'VOICE KEY REQUIRED'}</span>
-              <h2 id="gate-heading">{gateOpen ? 'THE FOREST REMEMBERS' : 'Speak the passphrase'}</h2>
-              <p>{gateOpen ? 'Your voice has opened the path.' : 'Only the correct Thai voice can open the gate.'}</p>
-              {!gateOpen && (
+            <ForestGate open={game.gateUnlocked} />
+            <div className={`gate-console ${game.gateUnlocked ? 'accepted' : ''}`}>
+              <span className="gate-kicker">{game.gateUnlocked ? 'GATE UNSEALED' : 'VOICE KEY REQUIRED'}</span>
+              <h2 id="gate-heading">{game.gateUnlocked ? 'THE FOREST REMEMBERS' : 'Speak the passphrase'}</h2>
+              <p>{game.gateUnlocked ? 'Your voice has opened the path.' : 'Only the correct Thai voice can open the gate.'}</p>
+              {!game.gateUnlocked && <button className="story-voice-button" onClick={() => void playStoryVoice('gateWarning')}>▶ &nbsp; HEAR WARNING</button>}
+              {!game.gateUnlocked && (
                 <>
                   <div className="curves">
-                    <div><small>YOUR VOICE</small><AudioCurve active={gateAttempt > 0} /></div>
+                    <div><small>YOUR VOICE</small><AudioCurve active={game.gateAttempts > 0} /></div>
                     <div><small>TARGET</small><AudioCurve target /></div>
                   </div>
-                  {gateAttempt === 1 && <div className="tone-feedback"><b>ALMOST…</b><span>Try lowering your tone.</span></div>}
-                  {gateAttempt === 2 && <div className="tone-feedback success"><b>VOICE KEY ACCEPTED ✓</b></div>}
-                  <button className="voice-button compact" onClick={speakAtGate}><span className="mic-icon">●</span><b>{gateAttempt === 1 ? 'TRY AGAIN' : 'SPEAK'}</b><i /></button>
-                  <small className="simulation-note">Attempt {gateAttempt === 0 ? '1' : '2'} of 2 · Prototype simulation</small>
+                  {game.gateAttempts === 1 && <div className="tone-feedback"><b>ALMOST…</b><span>Try lowering your tone.</span></div>}
+                  <button className="voice-button compact" onClick={speakAtGate}><span className="mic-icon">●</span><b>{game.gateAttempts === 1 ? 'TRY AGAIN' : 'SPEAK'}</b><i /></button>
+                  <small className="simulation-note">Attempt {game.gateAttempts === 0 ? '1' : '2'} of 2 · Prototype simulation</small>
                 </>
               )}
-              {gateOpen && <button className="primary-button" onClick={() => moveTo('solved')}><span>ENTER THE SHRINE</span><b>→</b></button>}
+              {game.gateUnlocked && <button className="primary-button" onClick={() => moveTo({ type: 'REVEAL_CREATURE' })}><span>ENTER THE SHRINE</span><b>→</b></button>}
             </div>
           </section>
+          </CinematicScene>
         )}
 
-        {scene === 'solved' && (
+        {scene === 'creature-reveal' && (
+          <CinematicScene asset={case001.assets.forest} variant="forest">
+            <section className="panel story-panel creature-reveal-panel" aria-labelledby="creature-reveal-heading">
+              <CornerMarks />
+              <div className="scene-label">THE SHRINE · FINAL REVEAL</div>
+              <div className="reveal-creature"><Creature /></div>
+              <div className="discovery-card reveal-card">
+                <span className="discovery-kicker">✦ &nbsp; THE LEGEND AWAKENS &nbsp; ✦</span>
+                <h2 id="creature-reveal-heading">SI HU HA TA</h2>
+                <p>THE FOUR-EARED, FIVE-EYED GUARDIAN</p>
+              </div>
+              <button className="primary-button" onClick={() => moveTo({ type: 'SOLVE_CASE', speakingScore: 87, toneScore: 91 })}><span>COMPLETE CASE #001</span><b>→</b></button>
+            </section>
+          </CinematicScene>
+        )}
+
+        {scene === 'case-solved' && (
+          <CinematicScene variant="shrine">
           <section className="panel solved-panel" aria-labelledby="solved-heading">
             <CornerMarks />
             <div className="sunburst" aria-hidden="true" />
@@ -437,21 +525,40 @@ export default function App() {
             <div className="eyebrow"><span />MYSTERY REVEALED<span /></div>
             <h1 id="solved-heading"><small>CASE #001</small>SOLVED</h1>
             <p className="thai-solved" lang="th">ไขปริศนาแล้ว</p>
+            <button className="story-voice-button" onClick={() => void playStoryVoice('caseSolved')}>▶ &nbsp; HEAR CASE RESULT</button>
             <div className="solution-copy">
               <span>THE CREATURE WAS</span>
               <strong>SI HU HA TA</strong>
               <p>A guardian spirit from the legends of Lanna.</p>
             </div>
             <div className="score-grid">
-              <div><span>THAI SPEAKING</span><b>87</b><small>/ 100</small></div>
-              <div><span>TONE ACCURACY</span><b>91</b><small>/ 100</small></div>
+              <div><span>THAI SPEAKING</span><b>{game.speakingScore}</b><small>/ 100</small></div>
+              <div><span>TONE ACCURACY</span><b>{game.toneScore}</b><small>/ 100</small></div>
             </div>
             <p className="score-disclaimer">Prototype pronunciation estimate</p>
             <div className="rank"><span>INVESTIGATOR RANK</span><b>GOLD</b></div>
-            <button className="solana-button" disabled><span className="solana-mark">S</span><b>CLAIM PROOF ON SOLANA</b><i>LOCKED</i></button>
-            <p className="coming-soon">Solana integration coming next.</p>
-            <button className="restart-button" onClick={() => { witnessRecognition.reset(); setGateAttempt(0); setGateOpen(false); moveTo('title') }}>REPLAY CASE</button>
+            <button className="solana-button" onClick={() => moveTo({ type: 'OPEN_SOLANA_CLAIM' })}><span className="solana-mark">S</span><b>VIEW SOLANA CLAIM</b><i>NEXT</i></button>
           </section>
+          </CinematicScene>
+        )}
+
+        {scene === 'solana-claim' && (
+          <CinematicScene variant="shrine">
+            <section className="panel solved-panel solana-claim-panel" aria-labelledby="solana-claim-heading">
+              <CornerMarks />
+              <Sigil />
+              <div className="eyebrow"><span />CASE PROOF<span /></div>
+              <h1 id="solana-claim-heading"><small>SOLANA CLAIM</small>COMING SOON</h1>
+              <p className="thai-solved">No transaction has been created.</p>
+              <div className="solution-copy">
+                <span>CLAIM STATUS</span>
+                <strong>{game.solanaClaimStatus.toUpperCase()}</strong>
+                <p>Real Solana integration is intentionally not implemented in this prototype.</p>
+              </div>
+              <button className="solana-button" disabled><span className="solana-mark">S</span><b>CREATE PROOF ON SOLANA</b><i>LOCKED</i></button>
+              <button className="restart-button" onClick={resetGame}>RESTART INVESTIGATION</button>
+            </section>
+          </CinematicScene>
         )}
       </div>
 
